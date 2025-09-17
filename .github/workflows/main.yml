@@ -26,35 +26,51 @@ jobs:
           "Professional Workspace Initialized" | Out-File "$env:USERPROFILE\Desktop\DevelopmentWorkspace\README.txt"
           Start-Sleep -Seconds (Get-Random -Minimum 4 -Maximum 9)
 
-      - name: Download ngrok (HttpClient, no flags)
+      # Write a standalone downloader script to avoid inline parsing issues
+      - name: Create downloader script
         shell: pwsh
         run: |
-          Add-Type -AssemblyName System.Net.Http
-          $url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
-          $zip = "ngrok.zip"
-          $ok = $false
-          for ($i=1; $i -le 3; $i++) {
-            try {
-              Write-Host "📥 Download attempt $i/3"
-              if (Test-Path $zip) { Remove-Item $zip -Force -ErrorAction SilentlyContinue }
-              $handler = New-Object System.Net.Http.HttpClientHandler
-              $handler.AllowAutoRedirect = $true
-              $client = New-Object System.Net.Http.HttpClient($handler)
-              $client.Timeout = [TimeSpan]::FromSeconds(60)
-              $resp = $client.GetAsync($url).GetAwaiter().GetResult()
-              $resp.EnsureSuccessStatusCode()
-              $bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
-              [IO.File]::WriteAllBytes($zip, $bytes)
-              if (Test-Path $zip -and (Get-Item $zip).Length -gt 1500000) { $ok = $true; break }
-            } catch {
-              $em = $_.Exception.Message
-              Write-Host "⚠️ Download attempt $i failed: $em"
-            }
-            Start-Sleep 3
-          }
-          if (-not $ok) { throw "Failed to download ngrok after 3 attempts" }
-          Expand-Archive -Path $zip -DestinationPath "." -Force
-          if (-not (Test-Path ".\ngrok.exe")) { throw "ngrok.exe not found after extraction" }
+          $script = @'
+Add-Type -AssemblyName System.Net.Http
+$Url = "https://download.ngrok.com/ngrok.zip"
+$Zip = "ngrok.zip"
+$Ok = $false
+for ($i=1; $i -le 3; $i++) {
+  try {
+    Write-Host "📥 Download attempt $i/3"
+    if (Test-Path $Zip) { Remove-Item $Zip -Force -ErrorAction SilentlyContinue }
+    $Handler = New-Object System.Net.Http.HttpClientHandler
+    $Handler.AllowAutoRedirect = $true
+    $Client = New-Object System.Net.Http.HttpClient($Handler)
+    $Client.Timeout = [TimeSpan]::FromSeconds(60)
+    $Resp = $Client.GetAsync($Url).GetAwaiter().GetResult()
+    $Resp.EnsureSuccessStatusCode()
+    $Bytes = $Resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+    [IO.File]::WriteAllBytes($Zip, $Bytes)
+    if (Test-Path $Zip -and (Get-Item $Zip).Length -gt 1000000) { $Ok = $true; break }
+  } catch {
+    $Em = $_.Exception.Message
+    Write-Host "⚠️ Download attempt $i failed: $Em"
+  }
+  Start-Sleep 3
+}
+if (-not $Ok) { throw "Failed to download ngrok after 3 attempts" }
+Expand-Archive -Path $Zip -DestinationPath "." -Force
+# The official ZIP contains platform folders; pick Windows x64 agent path
+# If the flattened ngrok.exe exists in CWD, keep it; else search common paths.
+if (-not (Test-Path ".\ngrok.exe")) {
+  $exe = Get-ChildItem -Recurse -Filter "ngrok.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($exe) { Copy-Item $exe.FullName ".\ngrok.exe" -Force }
+}
+if (-not (Test-Path ".\ngrok.exe")) { throw "ngrok.exe not found after extraction" }
+'@
+          $script | Out-File -FilePath "download-ngrok.ps1" -Encoding UTF8
+
+      - name: Run downloader (pwsh)
+        shell: pwsh
+        run: |
+          Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+          .\download-ngrok.ps1
 
       - name: Write ngrok config (enable local API)
         shell: pwsh
@@ -103,14 +119,10 @@ jobs:
         shell: pwsh
         run: |
           $cfg = "$env:USERPROFILE\ngrok.yml"
-          # Ensure no stale instances
           Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          # Start base agent so local API binds
           Start-Process -FilePath "$pwd\ngrok.exe" -ArgumentList @("start","--none","--config",$cfg) -WindowStyle Hidden
           Start-Sleep 1
-          # Start the TCP 3389 tunnel (California)
           Start-Process -FilePath "$pwd\ngrok.exe" -ArgumentList @("tcp","3389","--region=us-cal-1","--config",$cfg) -WindowStyle Hidden
-          # Poll API for readiness
           $ready=$false
           for ($i=1; $i -le 30; $i++) {
             try {
@@ -171,5 +183,5 @@ jobs:
         shell: pwsh
         run: |
           Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Remove-Item "ngrok.zip","$env:USERPROFILE\ngrok.yml" -Force -ErrorAction SilentlyContinue
+          Remove-Item "ngrok.zip","$env:USERPROFILE\ngrok.yml","download-ngrok.ps1" -Force -ErrorAction SilentlyContinue
           
