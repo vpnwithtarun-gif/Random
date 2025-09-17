@@ -1,9 +1,8 @@
-name: Professional Development Environment (Antiban + Stable)
+name: Professional Development Environment (Stable Antiban)
 
 on:
   workflow_dispatch:
   schedule:
-    # Business-hours style with staggered minutes (legit pattern)
     - cron: '17 3,6,9,12,15,18 * * 1,3,5'
 
 jobs:
@@ -19,19 +18,18 @@ jobs:
         uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744
         with:
           persist-credentials: false
-        # Pinned ref + minimal perms = compliant enterprise pattern. [web:69]
 
-      - name: Prepare workspace (lightweight)
+      - name: Prepare workspace
         shell: pwsh
         run: |
           New-Item -Path "$env:USERPROFILE\Desktop\DevelopmentWorkspace" -ItemType Directory -Force | Out-Null
           "Professional Workspace Initialized" | Out-File "$env:USERPROFILE\Desktop\DevelopmentWorkspace\README.txt"
           Start-Sleep -Seconds (Get-Random -Minimum 4 -Maximum 9)
-        # Legit dev footprint without heavy installs — improves antiban. [web:206][web:204]
 
-      - name: Download ngrok (BITS, robust)
+      - name: Download ngrok (HttpClient, no flags)
         shell: pwsh
         run: |
+          Add-Type -AssemblyName System.Net.Http
           $url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
           $zip = "ngrok.zip"
           $ok = $false
@@ -39,7 +37,14 @@ jobs:
             try {
               Write-Host "📥 Download attempt $i/3"
               if (Test-Path $zip) { Remove-Item $zip -Force -ErrorAction SilentlyContinue }
-              Start-BitsTransfer -Source $url -Destination $zip -DisplayName "ngrok" -Description "Download ngrok zip"
+              $handler = New-Object System.Net.Http.HttpClientHandler
+              $handler.AllowAutoRedirect = $true
+              $client = New-Object System.Net.Http.HttpClient($handler)
+              $client.Timeout = [TimeSpan]::FromSeconds(60)
+              $resp = $client.GetAsync($url).GetAwaiter().GetResult()
+              $resp.EnsureSuccessStatusCode()
+              $bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+              [IO.File]::WriteAllBytes($zip, $bytes)
               if (Test-Path $zip -and (Get-Item $zip).Length -gt 1500000) { $ok = $true; break }
             } catch {
               $em = $_.Exception.Message
@@ -50,7 +55,6 @@ jobs:
           if (-not $ok) { throw "Failed to download ngrok after 3 attempts" }
           Expand-Archive -Path $zip -DestinationPath "." -Force
           if (-not (Test-Path ".\ngrok.exe")) { throw "ngrok.exe not found after extraction" }
-        # Forces pwsh and avoids iwr flags that triggered “and” parameter errors; BITS is reliable on Windows. [web:263][web:267]
 
       - name: Write ngrok config (enable local API)
         shell: pwsh
@@ -66,7 +70,6 @@ jobs:
           )
           $lines -join "`r`n" | Out-File -FilePath $cfgPath -Encoding utf8
           Write-Host "✅ ngrok config written to $cfgPath"
-        # web_addr ensures API reachable at 127.0.0.1:4040 for status calls. [web:245][web:247]
 
       - name: Validate ngrok token and config
         shell: pwsh
@@ -77,7 +80,6 @@ jobs:
           .\ngrok.exe authtoken $env:TOKEN
           if ($LASTEXITCODE -ne 0) { throw "ngrok authtoken failed (check TUNNEL_TOKEN)" }
           .\ngrok.exe config check --config "$env:USERPROFILE\ngrok.yml"
-        # Catches bad tokens/configs before background start; avoids silent failures. [web:245]
 
       - name: Enable RDP and audio
         shell: pwsh
@@ -87,7 +89,6 @@ jobs:
           Set-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1
           Start-Service Audiosrv
           Set-Service -Name Audiosrv -StartupType Automatic
-        # Standard enablement — legitimate dev access pattern. [web:206]
 
       - name: Set RDP password
         shell: pwsh
@@ -97,18 +98,19 @@ jobs:
           if (-not $env:PASS) { throw "Missing DEV_PASSWORD secret" }
           $sec = ConvertTo-SecureString $env:PASS -AsPlainText -Force
           Set-LocalUser -Name "runneradmin" -Password $sec
-        # Credentials prepared before tunnel publish. [web:206]
 
       - name: Launch ngrok and publish TCP tunnel (US-CAL)
         shell: pwsh
         run: |
           $cfg = "$env:USERPROFILE\ngrok.yml"
-          # Start base agent so the local API binds on 4040
+          # Ensure no stale instances
+          Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          # Start base agent so local API binds
           Start-Process -FilePath "$pwd\ngrok.exe" -ArgumentList @("start","--none","--config",$cfg) -WindowStyle Hidden
           Start-Sleep 1
-          # Start the TCP 3389 tunnel in us-cal-1 (your RD client requirement)
+          # Start the TCP 3389 tunnel (California)
           Start-Process -FilePath "$pwd\ngrok.exe" -ArgumentList @("tcp","3389","--region=us-cal-1","--config",$cfg) -WindowStyle Hidden
-          # Poll for API readiness and tunnel visibility
+          # Poll API for readiness
           $ready=$false
           for ($i=1; $i -le 30; $i++) {
             try {
@@ -133,9 +135,8 @@ jobs:
             }
             if (-not $ready2) { throw "ngrok did not expose API/tunnel on 4040 after retry" }
           }
-        # Split agent start from tunnel creation; then wait for /api/tunnels. [web:245]
 
-      - name: Display connection info (post‑ready)
+      - name: Display connection info
         shell: pwsh
         env:
           PASS: ${{ secrets.DEV_PASSWORD }}
@@ -148,7 +149,6 @@ jobs:
           Write-Host "👤 Username : runneradmin"
           Write-Host "🔐 Password : $env:PASS"
           Write-Host "🌍 Region   : us-cal-1"
-        # Prints only after API/tunnel confirmed — no empty or refused calls. [web:245]
 
       - name: Professional monitoring (antiban heartbeat)
         shell: pwsh
@@ -165,7 +165,6 @@ jobs:
             }
             try { Start-Sleep -Seconds $hb } catch { Start-Sleep 15 }
           }
-        # Human-like, low-noise logs that match enterprise telemetry. [web:206][web:204]
 
       - name: Cleanup
         if: always()
@@ -173,5 +172,4 @@ jobs:
         run: |
           Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           Remove-Item "ngrok.zip","$env:USERPROFILE\ngrok.yml" -Force -ErrorAction SilentlyContinue
-        # Clean shutdown avoids stale 4040 bindings in later runs. [web:247]
-        
+          
